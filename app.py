@@ -12,11 +12,13 @@ from core.analyzer import (
     extract_jd_keywords,
     find_top_evidence_sentences,
     analyze_strengths_and_gaps,
+    extract_skills_from_resume,
+    highlight_keywords
 )
 from core.privacy import anonymize_text
 from core.logger import log_analysis_event
 from core.llm import generate_gemini_analysis
-from core.embedding import load_embedding_model # Direct import for caching
+from core.embedding import load_embedding_model
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(
@@ -32,13 +34,30 @@ def get_embedding_model():
     return load_embedding_model()
 
 # --- State Management ---
-if 'results' not in st.session_state:
-    st.session_state.results = []
-if 'jd_keywords' not in st.session_state:
-    st.session_state.jd_keywords = []
+if 'results' not in st.session_state: st.session_state.results = []
+if 'jd_keywords' not in st.session_state: st.session_state.jd_keywords = []
+
+# --- MODIFIED: Robust API Key Check ---
+try:
+    # This handles missing secrets file completely
+    try:
+        gemini_api_key = st.secrets["GEMINI_API_KEY"]
+        gemini_api_key_found = gemini_api_key is not None and gemini_api_key != ""
+    except (KeyError, st.errors.StreamlitSecretNotFoundError):
+        gemini_api_key_found = False
+except Exception:
+    # Fallback for any other unexpected errors
+    gemini_api_key_found = False
 
 # Load model via cache
 model = get_embedding_model()
+
+# --- Helper function for styling skill chips ---
+def create_skill_chips_html(skills: List[str]) -> str:
+    """Generates HTML for displaying skills as styled chips."""
+    styles = "display:inline-block; background-color:#2B3037; color:#E0E0E0; padding:5px 10px; margin:3px; border-radius:15px; font-size:0.85em;"
+    chips = "".join([f'<div style="{styles}">{skill}</div>' for skill in skills])
+    return f'<div style="line-height: 1.6;">{chips}</div>'
 
 # --- Core Processing Functions ---
 def process_job_description(jd_text: str) -> Dict[str, Any]:
@@ -46,7 +65,7 @@ def process_job_description(jd_text: str) -> Dict[str, Any]:
     sentences = jd_text.split('\n')
     embedding = generate_embedding(sentences, model)
     keywords = extract_jd_keywords(jd_text)
-    st.session_state.jd_keywords = keywords # Store keywords for display
+    st.session_state.jd_keywords = keywords
     return {"text": jd_text, "embedding": embedding, "keywords": keywords}
 
 def process_resume(resume_file: Any, jd_data: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, Any]:
@@ -70,8 +89,10 @@ def process_resume(resume_file: Any, jd_data: Dict[str, Any], thresholds: Dict[s
     evidence = find_top_evidence_sentences(candidate_data["sentences"], jd_data["embedding"], model)
     if is_anonymized:
         evidence = [anonymize_text(sentence) for sentence in evidence]
+    
+    extracted_skills = extract_skills_from_resume(candidate_data["raw_text"])
 
-    use_gemini = st.session_state.get('use_gemini', False)
+    use_gemini = st.session_state.get('use_gemini', False) and gemini_api_key_found
     ai_analysis = {}
     if use_gemini:
         ai_analysis = generate_gemini_analysis(jd_data["text"], text_for_analysis)
@@ -84,18 +105,15 @@ def process_resume(resume_file: Any, jd_data: Dict[str, Any], thresholds: Dict[s
         ai_analysis["summary"] = "N/A (Keyword analysis only)"
 
     return {
-        "Filename": filename_display,
-        "Score": round(similarity_score * 100, 2),
-        "Category": category_info["category"],
-        "Status": "Pending", # --- NEW: Default status ---
+        "Filename": filename_display, "Score": round(similarity_score * 100, 2),
+        "Category": category_info["category"], "Status": "Pending",
         "summary": ai_analysis.get("summary", "Error."),
-        "strengths": ai_analysis.get("strengths", []),
-        "gaps": ai_analysis.get("gaps", []),
-        "evidence": evidence,
+        "strengths": ai_analysis.get("strengths", []), "gaps": ai_analysis.get("gaps", []),
+        "evidence": evidence, "skills": extracted_skills
     }
 
 def update_candidate_status(filename: str, new_status: str):
-    """Helper function to update the status of a candidate in the session state."""
+    """Updates the status of a candidate in the session state."""
     for result in st.session_state.results:
         if result["Filename"] == filename:
             result["Status"] = new_status
@@ -105,21 +123,32 @@ def update_candidate_status(filename: str, new_status: str):
 with st.sidebar:
     st.header("1. Job Description")
     st.text_area("Paste the Job Description here", height=200, key="jd_text")
-
     st.header("2. Upload Resumes")
-    st.file_uploader("Upload resumes (PDF, max 10)", type="pdf", accept_multiple_files=True, key="resume_uploader")
-    
+    # --- MODIFIED: Accept .docx files ---
+    st.file_uploader(
+        "Upload resumes (PDF or DOCX, max 10)", 
+        type=["pdf", "docx"], 
+        accept_multiple_files=True, 
+        key="resume_uploader"
+    )
     st.header("3. Controls & Settings")
     st.toggle("Anonymize Candidates", key="anonymize", value=True)
-    st.toggle("Enable Gemini AI Analysis", key="use_gemini", value=False)
-    
+
+    st.toggle(
+        "Enable Gemini AI Analysis", 
+        key="use_gemini", 
+        value=False, 
+        disabled=not gemini_api_key_found,
+        help="Requires a Gemini API key in your secrets.toml file."
+    )
+    if not gemini_api_key_found:
+        st.warning("No Gemini API Key found. AI Analysis is disabled. Please add a secrets.toml file.")
+
     st.subheader("Category Thresholds")
     strong_thresh = st.slider("Strong Match Threshold (%)", 50, 100, 75)
     good_thresh = st.slider("Good Match Threshold (%)", 40, 90, 65)
     avg_thresh = st.slider("Average Match Threshold (%)", 30, 80, 55)
-
     analyze_button = st.button("Analyze Resumes", type="primary", use_container_width=True)
-    
     if st.session_state.jd_keywords:
         st.subheader("Extracted JD Keywords")
         st.info(", ".join(st.session_state.jd_keywords))
@@ -133,61 +162,58 @@ if analyze_button:
     elif len(st.session_state.resume_uploader) > 10: st.error("You can upload a maximum of 10 resumes.")
     else:
         with st.spinner("Analyzing resumes... This may take a moment."):
+            # --- MODIFIED: Handle potential parsing errors in the main loop ---
             jd_data = process_job_description(st.session_state.jd_text)
             thresholds = {
                 "strong_threshold": strong_thresh / 100,
                 "good_threshold": good_thresh / 100,
                 "average_threshold": avg_thresh / 100
             }
-            results = [process_resume(file, jd_data, thresholds) for file in st.session_state.resume_uploader]
+            
+            results = []
+            for file in st.session_state.resume_uploader:
+                result = process_resume(file, jd_data, thresholds)
+                if result.get("error"):
+                    st.error(f"Error processing {file.name}: {result['error']}")
+                else:
+                    results.append(result)
+
             st.session_state.results = sorted(results, key=lambda x: x.get('Score', 0), reverse=True)
-            try:
-                log_analysis_event(st.session_state.jd_text, st.session_state.results, st.session_state.anonymize)
-                st.toast("Analysis complete!")
-            except Exception as e:
-                st.error(f"Failed to write to audit log: {e}")
+            
+            if st.session_state.results:
+                try:
+                    log_analysis_event(st.session_state.jd_text, st.session_state.results, st.session_state.anonymize)
+                    st.toast("Analysis complete!")
+                except Exception as e:
+                    st.error(f"Failed to write to audit log: {e}")
+            else:
+                st.warning("Analysis finished, but no resumes could be successfully processed.")
+
 
 if st.session_state.results:
     st.header("Analysis Results")
-    
     all_categories = ["Strong", "Good", "Average", "Weak"]
     selected_categories = st.multiselect("Filter by Category", options=all_categories, default=all_categories)
-    
     filtered_results = [res for res in st.session_state.results if res.get("Category") in selected_categories]
     
     if not filtered_results:
         st.warning("No candidates match the selected filters.")
     else:
         df_display = pd.DataFrame(filtered_results)
-
-        # --- NEW: KPI DISPLAY ---
         st.subheader("Screening KPIs")
         kpi_cols = st.columns(4)
         kpi_cols[0].metric("Total Processed", len(df_display))
         kpi_cols[1].metric("Average Score", f"{df_display['Score'].mean():.2f}%" if not df_display.empty else "N/A")
-        
-        # Safely get category counts
         category_counts = df_display['Category'].value_counts()
         kpi_cols[2].metric("Strong Matches", category_counts.get("Strong", 0))
         kpi_cols[3].metric("Good Matches", category_counts.get("Good", 0))
-
-        # --- UPDATED: Results Table with Status ---
         st.dataframe(df_display[["Filename", "Score", "Category", "Status"]], use_container_width=True, hide_index=True)
-
         col1, col2 = st.columns(2)
         with col1:
-             st.download_button(
-                "Download All Filtered Results", 
-                df_display.to_csv(index=False).encode('utf-8'), 
-                'filtered_resume_analysis.csv', 'text/csv'
-            )
+             st.download_button("Download All Filtered Results", df_display.to_csv(index=False).encode('utf-8'), 'filtered_resume_analysis.csv', 'text/csv')
         with col2:
             shortlisted_df = df_display[df_display['Status'] == 'Shortlisted']
-            st.download_button(
-                "Download Shortlist Only", 
-                shortlisted_df.to_csv(index=False).encode('utf-8'), 
-                'shortlisted_candidates.csv', 'text/csv'
-            )
+            st.download_button("Download Shortlist Only", shortlisted_df.to_csv(index=False).encode('utf-8'), 'shortlisted_candidates.csv', 'text/csv')
         
         st.header("Detailed Candidate View")
         candidate_filenames = [res["Filename"] for res in filtered_results]
@@ -197,7 +223,6 @@ if st.session_state.results:
             selected_candidate_data = next((res for res in filtered_results if res["Filename"] == selected_candidate_file), None)
             
             if selected_candidate_data:
-                # --- NEW: ACTION BUTTONS ---
                 st.subheader("Actions")
                 action_cols = st.columns(3)
                 action_cols[0].button("✅ Shortlist", on_click=update_candidate_status, args=(selected_candidate_file, "Shortlisted"), use_container_width=True)
@@ -206,10 +231,15 @@ if st.session_state.results:
 
                 st.subheader("AI Summary")
                 st.markdown(f"> {selected_candidate_data['summary']}")
+                
+                st.subheader("Extracted Skills")
+                skills_html = create_skill_chips_html(selected_candidate_data.get("skills", []))
+                st.markdown(skills_html, unsafe_allow_html=True)
 
                 st.subheader("Top Evidence Sentences")
                 for sentence in selected_candidate_data["evidence"]:
-                    st.markdown(f"- *{sentence}*")
+                    highlighted_sentence = highlight_keywords(sentence, st.session_state.jd_keywords)
+                    st.markdown(f"- *{highlighted_sentence}*", unsafe_allow_html=True)
                 
                 st.subheader("Detailed Analysis")
                 col1, col2 = st.columns(2)

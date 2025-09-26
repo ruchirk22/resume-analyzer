@@ -6,3 +6,5 @@ sentence-transformers
 nltk
 scikit-learn
 yake
+google-generativeai
+python-docx

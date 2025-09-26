@@ -17,7 +17,10 @@ def configure_gemini_api():
             genai.configure(api_key=api_key)
             return True
         return False
-    except (KeyError, FileNotFoundError):
+    except (KeyError, FileNotFoundError, st.errors.StreamlitSecretNotFoundError):
+        return False
+    except Exception:
+        # Catch all for any other unexpected errors
         return False
 
 def generate_gemini_analysis(jd_text: str, resume_text: str) -> Dict[str, Any]:
