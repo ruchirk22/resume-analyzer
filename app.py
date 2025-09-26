@@ -200,53 +200,100 @@ if st.session_state.results:
         st.warning("No candidates match the selected filters.")
     else:
         df_display = pd.DataFrame(filtered_results)
-        st.subheader("Screening KPIs")
-        kpi_cols = st.columns(4)
-        kpi_cols[0].metric("Total Processed", len(df_display))
-        kpi_cols[1].metric("Average Score", f"{df_display['Score'].mean():.2f}%" if not df_display.empty else "N/A")
-        category_counts = df_display['Category'].value_counts()
-        kpi_cols[2].metric("Strong Matches", category_counts.get("Strong", 0))
-        kpi_cols[3].metric("Good Matches", category_counts.get("Good", 0))
-        st.dataframe(df_display[["Filename", "Score", "Category", "Status"]], use_container_width=True, hide_index=True)
-        col1, col2 = st.columns(2)
-        with col1:
-             st.download_button("Download All Filtered Results", df_display.to_csv(index=False).encode('utf-8'), 'filtered_resume_analysis.csv', 'text/csv')
-        with col2:
-            shortlisted_df = df_display[df_display['Status'] == 'Shortlisted']
-            st.download_button("Download Shortlist Only", shortlisted_df.to_csv(index=False).encode('utf-8'), 'shortlisted_candidates.csv', 'text/csv')
         
-        st.header("Detailed Candidate View")
-        candidate_filenames = [res["Filename"] for res in filtered_results]
-        selected_candidate_file = st.selectbox("Select a candidate to see details", options=candidate_filenames)
+        # Create tabs for simple vs advanced view
+        tab1, tab2 = st.tabs(["Essential View", "Advanced Analysis"])
         
-        if selected_candidate_file:
-            selected_candidate_data = next((res for res in filtered_results if res["Filename"] == selected_candidate_file), None)
+        with tab1:
+            st.subheader("Candidate Overview")
             
-            if selected_candidate_data:
-                st.subheader("Actions")
-                action_cols = st.columns(3)
-                action_cols[0].button("✅ Shortlist", on_click=update_candidate_status, args=(selected_candidate_file, "Shortlisted"), use_container_width=True)
-                action_cols[1].button("🤔 Maybe", on_click=update_candidate_status, args=(selected_candidate_file, "Maybe"), use_container_width=True)
-                action_cols[2].button("❌ Reject", on_click=update_candidate_status, args=(selected_candidate_file, "Rejected"), use_container_width=True)
-
-                st.subheader("AI Summary")
-                st.markdown(f"> {selected_candidate_data['summary']}")
+            # GDPR-compliant table without numerical scores
+            # Show categories instead of numerical scores
+            compliant_df = df_display.copy()
+            compliant_df = compliant_df[["Filename", "Category", "Status"]]
+            st.dataframe(compliant_df, use_container_width=True, hide_index=True)
+            
+            # Download buttons
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button("Download All Results", compliant_df.to_csv(index=False).encode('utf-8'), 'filtered_candidates.csv', 'text/csv')
+            with col2:
+                shortlisted_df = compliant_df[compliant_df['Status'] == 'Shortlisted']
+                st.download_button("Download Shortlist Only", shortlisted_df.to_csv(index=False).encode('utf-8'), 'shortlisted_candidates.csv', 'text/csv')
+            
+            # Simplified candidate details view
+            st.subheader("Candidate Details")
+            candidate_filenames = [res["Filename"] for res in filtered_results]
+            selected_candidate_file = st.selectbox("Select a candidate", options=candidate_filenames)
+            
+            if selected_candidate_file:
+                selected_candidate_data = next((res for res in filtered_results if res["Filename"] == selected_candidate_file), None)
                 
-                st.subheader("Extracted Skills")
-                skills_html = create_skill_chips_html(selected_candidate_data.get("skills", []))
-                st.markdown(skills_html, unsafe_allow_html=True)
-
-                st.subheader("Top Evidence Sentences")
-                for sentence in selected_candidate_data["evidence"]:
-                    highlighted_sentence = highlight_keywords(sentence, st.session_state.jd_keywords)
-                    st.markdown(f"- *{highlighted_sentence}*", unsafe_allow_html=True)
+                if selected_candidate_data:
+                    # Quick decision buttons
+                    st.subheader("Decision")
+                    action_cols = st.columns(3)
+                    action_cols[0].button("✅ Shortlist", on_click=update_candidate_status, args=(selected_candidate_file, "Shortlisted"), use_container_width=True)
+                    action_cols[1].button("🤔 Maybe", on_click=update_candidate_status, args=(selected_candidate_file, "Maybe"), use_container_width=True)
+                    action_cols[2].button("❌ Reject", on_click=update_candidate_status, args=(selected_candidate_file, "Rejected"), use_container_width=True)
+                    
+                    # Key skills at a glance
+                    st.subheader("Key Skills")
+                    skills_html = create_skill_chips_html(selected_candidate_data.get("skills", []))
+                    st.markdown(skills_html, unsafe_allow_html=True)
+                    
+                    # Simple summary - just the AI summary if available
+                    if selected_candidate_data['summary'] != "N/A (Keyword analysis only)" and selected_candidate_data['summary'] != "N/A (AI analysis failed)":
+                        st.subheader("Summary")
+                        st.markdown(f"> {selected_candidate_data['summary']}")
+        
+        with tab2:
+            # Advanced metrics section
+            st.subheader("Detailed Metrics")
+            kpi_cols = st.columns(4)
+            kpi_cols[0].metric("Total Processed", len(df_display))
+            kpi_cols[1].metric("Average Score", f"{df_display['Score'].mean():.2f}%" if not df_display.empty else "N/A")
+            category_counts = df_display['Category'].value_counts()
+            kpi_cols[2].metric("Strong Matches", category_counts.get("Strong", 0))
+            kpi_cols[3].metric("Good Matches", category_counts.get("Good", 0))
+            
+            # Advanced table with scores
+            st.markdown("⚠️ **Note:** Numerical scores should be used for internal assessment only and not as the sole basis for hiring decisions.")
+            st.dataframe(df_display[["Filename", "Score", "Category", "Status"]], use_container_width=True, hide_index=True)
+            
+            # Advanced download option
+            st.download_button("Download Detailed Results (with scores)", df_display.to_csv(index=False).encode('utf-8'), 'detailed_resume_analysis.csv', 'text/csv')
+            
+            # Advanced candidate analysis
+            st.subheader("Advanced Candidate Analysis")
+            adv_candidate = st.selectbox("Select candidate for detailed analysis", options=candidate_filenames, key="adv_candidate_select")
+            
+            if adv_candidate:
+                adv_candidate_data = next((res for res in filtered_results if res["Filename"] == adv_candidate), None)
                 
-                st.subheader("Detailed Analysis")
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown("✅ **Strengths**")
-                    st.info("\n".join(f"- {s}" for s in selected_candidate_data["strengths"]) if selected_candidate_data["strengths"] else "N/A")
-                with col2:
-                    st.markdown("❌ **Gaps**")
-                    st.warning("\n".join(f"- {g}" for g in selected_candidate_data["gaps"]) if selected_candidate_data["gaps"] else "N/A")
+                if adv_candidate_data:
+                    # Display numerical score in advanced view
+                    st.metric("Match Score", f"{adv_candidate_data['Score']}%")
+                    
+                    st.subheader("AI Analysis")
+                    st.markdown(f"> {adv_candidate_data['summary']}")
+                    
+                    # Strengths and gaps
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.subheader("Strengths")
+                        for strength in adv_candidate_data.get("strengths", []):
+                            st.markdown(f"- {strength}")
+                    
+                    with col2:
+                        st.subheader("Potential Gaps")
+                        for gap in adv_candidate_data.get("gaps", []):
+                            st.markdown(f"- {gap}")
+                    
+                    st.subheader("Evidence Sentences")
+                    for sentence in adv_candidate_data["evidence"]:
+                        highlighted_sentence = highlight_keywords(sentence, st.session_state.jd_keywords)
+                        st.markdown(f"- *{highlighted_sentence}*", unsafe_allow_html=True)
+                    
+                    # This section was moved up to the columns above
 
