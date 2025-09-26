@@ -40,6 +40,8 @@ data/outputs/
 *.log
 .env
 .env.local
+.streamlit/secrets.toml
+secrets.toml
 
 # Temporary files
 *.tmp
